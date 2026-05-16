@@ -1,8 +1,3 @@
-# 此工作流是为了构建一个immortalwrt固件的安装器 格式为iso 可用于所有的虚拟机 和 物理机
-# 所谓安装器就是用来安装用的 iso引导的是一个启动速度极快的debian live系统 跑码后输入命令 ddd 即可调出安装菜单
-# 安装时 若是多张硬盘 你可以选择 需要安装的硬盘 此类方法安装的openwrt 安装后是有剩余空间的 更多信息请参考 wukongdaily/img-installer 项目
-# 几乎所有linux 都有各自的安装器 唯独openwrt和armbian 没有, 希望此工作流 弥补这个遗憾 让你更优雅的 安装openwrt 
-
 name: build 25.12.x ISO 
 
 on:
@@ -46,13 +41,16 @@ on:
 permissions:
   contents: write
 
+# 👇 全局强制启用 Node.js 24，消除警告
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build_immortalwrt:
     runs-on: ubuntu-22.04
-
     steps:
       - name: Checkout code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set executable permissions
         run: chmod +x ${{ github.workspace }}/x86-64/build25.sh
@@ -65,6 +63,15 @@ jobs:
               exit 1
             fi
           fi
+
+      # 👇 增加调试步骤，打印关键变量和文件
+      - name: Debug - Print key info
+        run: |
+          echo "GitHub Workspace: ${{ github.workspace }}"
+          echo "Profile: ${{ github.event.inputs.profile }}"
+          echo "LuCI Version: ${{ github.event.inputs.luci_version }}"
+          echo "Docker image: immortalwrt/imagebuilder:x86-64-openwrt-${{ github.event.inputs.luci_version }}"
+          ls -la ${{ github.workspace }}/x86-64/
 
       - name: ✅ 正在构建ImmortalWrt固件25.12.x
         run: |
@@ -80,16 +87,17 @@ jobs:
             -v "${{ github.workspace }}/x86-64/imm25.config:/home/build/immortalwrt/.config" \
             -v "${{ github.workspace }}/shell:/home/build/immortalwrt/shell" \
             -v "${{ github.workspace }}/x86-64/build25.sh:/home/build/immortalwrt/build.sh" \
-            -e PROFILE=$profile \
-            -e INCLUDE_DOCKER=$include_docker \
-            -e ENABLE_PPPOE=${{ inputs.enable_pppoe }} \
-            -e PPPOE_ACCOUNT=${{ inputs.pppoe_account }} \
-            -e PPPOE_PASSWORD=${{ inputs.pppoe_password }} \
-          immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash /home/build/immortalwrt/build.sh
+            -e PROFILE="$profile" \
+            -e INCLUDE_DOCKER="$include_docker" \
+            -e ENABLE_PPPOE="${{ github.event.inputs.enable_pppoe }}" \
+            -e PPPOE_ACCOUNT="${{ github.event.inputs.pppoe_account }}" \
+            -e PPPOE_PASSWORD="${{ github.event.inputs.pppoe_password }}" \
+          immortalwrt/imagebuilder:x86-64-openwrt-${luci_version} /bin/bash -x /home/build/immortalwrt/build.sh
+        # 👇 -x 会打印所有命令执行过程，方便定位具体哪一步失败了
 
       - name: ✅ 复制固件到根目录
         run: |
-          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }}
+          cp ${{ github.workspace }}/bin/targets/x86/64/*squashfs-combined-efi.img.gz ${{ github.workspace }} || echo "WARNING: No firmware image found!" && ls -la ${{ github.workspace }}/bin/targets/x86/64/
 
       - name: ✅ 上传固件到 artifact (for ISO generation)
         uses: actions/upload-artifact@v4
@@ -101,7 +109,6 @@ jobs:
   build_installer_iso:
     runs-on: ubuntu-22.04
     needs: build_immortalwrt
-
     steps:
       - name: Download firmware artifact
         uses: actions/download-artifact@v4
@@ -121,11 +128,12 @@ jobs:
       - name: ✅ 制作 25.12.x ISO
         run: |
           firmware_file=$(ls *squashfs-combined-efi.img.gz)
+          echo "Found firmware: $firmware_file"
           cd img-installer
-          bash autobuild/autobuild.sh "../$firmware_file"
+          bash -x autobuild/autobuild.sh "../$firmware_file"
 
       - name: 🚀 上传 ISO 到 Release
-        uses: softprops/action-gh-release@v2.2.1
+        uses: softprops/action-gh-release@v2
         with:
           tag_name: "Custom-Installer-x86_64-ISO"
           body_path: "${{ github.workspace }}/img-installer/autobuild/info.md"
